@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CTF Chat</title>
+</head>
+<body>
+    {% if login %}
+        <h2>Login or Register</h2>
+        <form method="post">
+            <input name="username" placeholder="Username" required><br>
+            <input name="password" placeholder="Password" type="password" required><br>
+            <button name="action" value="Login">Login</button>
+            <button name="action" value="Register">Register</button>
+        </form>
+    {% else %}
+        <h2>Welcome, {{ username }}!</h2>
+        <form method="get" action="/">
+            <button name="logout" value="1">Logout</button>
+        </form>
+
+        <h3>Send Message</h3>
+        <form method="post" action="/?send=1">
+            <select name="to">
+                {% for u in users %}
+                    <option value="{{ u }}">{{ u }}</option>
+                {% endfor %}
+            </select>
+            <input name="text" placeholder="Message" required>
+            <button>Send</button>
+        </form>
+
+        <h3>Your Inbox and Outbox</h3>
+        <ul>
+        {% for dir, other, msg in visible %}
+            <li><b>{{ dir }} {{ other }}:</b> {{ msg }}</li>
+        {% endfor %}
+        </ul>
+
+        <h3>Other Encrypted Messages</h3>
+        <ul>
+        {% for sender, receiver, ct in hidden %}
+            <li><b>{{ sender }} → {{ receiver }}:</b> {{ ct }}</li>
+        {% endfor %}
+        </ul>
+    {% endif %}
+</body>
+</html>
