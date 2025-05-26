@@ -1,32 +1,32 @@
 from flask import Flask, request, render_template, redirect, session
+from models import db, User, Message
 from utils import generate_substitution_key, encrypt, decrypt
 import string
-import os
 
 app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ctf_chat.db'  # SQLite для простоты
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = 'secretkey_for_demo_ctf_only'
 
-USERFILE = 'users.txt'
+db.init_app(app)
 
-# Загружаем пользователей
-def load_users():
-    users = {}
-    if os.path.exists(USERFILE):
-        with open(USERFILE, 'r') as f:
-            for line in f:
-                if ':' in line:
-                    login, pw = line.strip().split(':', 1)
-                    users[login.upper()] = pw
-    return users
+# Создаем таблицы при первом запуске
+with app.app_context():
+    db.create_all()
 
-# Добавляем нового пользователя
+# Регистрация пользователя
 def register_user(login, password):
-    with open(USERFILE, 'a') as f:
-        f.write(f"{login}:{password}\n")
+    if not User.query.filter_by(login=login.upper()).first():
+        new_user = User(login=login.upper(), password=password)
+        db.session.add(new_user)
+        db.session.commit()
+        return True
+    return False
 
-USERS = load_users()
-KEYS = {}  # (sender, receiver) → key
-MESSAGES = []  # (sender, receiver, ciphertext)
+# Аутентификация пользователя
+def authenticate_user(login, password):
+    user = User.query.filter_by(login=login.upper(), password=password).first()
+    return user is not None
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -35,15 +35,13 @@ def index():
         pw = request.form.get("password", "").strip()
 
         if request.form.get("action") == "Register":
-            if login not in USERS:
-                register_user(login, pw)
-                USERS[login] = pw
+            if register_user(login, pw):
                 session["username"] = login
                 return redirect("/")
             else:
                 return "User already exists.", 403
 
-        if USERS.get(login) == pw:
+        if authenticate_user(login, pw):
             session["username"] = login
             return redirect("/")
         else:
@@ -53,7 +51,7 @@ def index():
     if not user:
         return render_template("index.html", login=True)
 
-    # Logout
+    # Выход
     if request.args.get("logout") == "1":
         session.pop("username", None)
         return redirect("/")
@@ -63,28 +61,43 @@ def index():
         to = request.form.get("to", "").strip().upper()
         text = request.form.get("text", "")
         if to and text:
-            key = KEYS.get((user, to))
-            if not key:
-                key = generate_substitution_key()
-                KEYS[(user, to)] = key
-            ct = encrypt(text.upper(), key)
-            MESSAGES.append((user, to, ct))
+            sender = User.query.filter_by(login=user).first()
+            receiver = User.query.filter_by(login=to).first()
+            if sender and receiver:
+                key = generate_substitution_key()  # Новый ключ для каждого сообщения
+                ct = encrypt(text.upper(), key)
+                print(ct)
+                new_message = Message(sender_id=sender.id, receiver_id=receiver.id, ciphertext=ct, key=key)
+                db.session.add(new_message)
+                db.session.commit()
+                return redirect("/")
 
-    # Видимые сообщения = все входящие и исходящие
+    # Получаем текущего пользователя
+    current_user = User.query.filter_by(login=user).first()
+
+    # Последние 100 сообщений, связанных с текущим пользователем
+    messages = Message.query.filter(
+        (Message.sender_id == current_user.id) | (Message.receiver_id == current_user.id)
+    ).order_by(Message.id.desc()).limit(100).all()
+
     visible = []
-    hidden = []
-    for sender, receiver, ct in MESSAGES:
-        if receiver == user or sender == user:
-            key = KEYS.get((sender, receiver))
-            pt = decrypt(ct, key) if key else "<ERROR>"
-            direction = "←" if receiver == user else "→"
-            other = sender if receiver == user else receiver
-            visible.append((direction, other, pt))
-        else:
-            hidden.append((sender, receiver, ct))
+    for msg in messages:
+        sender = User.query.get(msg.sender_id).login
+        receiver = User.query.get(msg.receiver_id).login
+        key = msg.key
+        pt = decrypt(msg.ciphertext, key)
+        direction = "←" if receiver == user else "→"
+        other = sender if receiver == user else receiver
+        visible.append((direction, other, pt))
+
+    # Последние 100 зашифрованных сообщений, не связанных с пользователем
+    hidden = Message.query.filter(
+        (Message.sender_id != current_user.id) & (Message.receiver_id != current_user.id)
+    ).order_by(Message.id.desc()).limit(100).all()
+    hidden = [(User.query.get(msg.sender_id).login, User.query.get(msg.receiver_id).login, msg.ciphertext) for msg in hidden]
 
     return render_template("index.html", login=False, username=user,
-                           users=sorted(USERS.keys() - {user}),
+                           users=[u.login for u in User.query.all() if u.login != user],
                            visible=visible, hidden=hidden)
 
 if __name__ == "__main__":
